@@ -2,14 +2,39 @@
 
 An AI-powered web testing agent that can test applications based on natural language test scenarios. Built with TypeScript, Playwright, and Claude AI.
 
+## 🌐 Two Ways to Use
+
+### 1. Web Application (Recommended) 🎨
+Beautiful browser-based interface - no command line needed!
+
+```bash
+npm run web
+```
+
+Then open `http://localhost:3000` in your browser.
+
+👉 **[See Web App Guide](WEB-APP-GUIDE.md)** for full details.
+
+### 2. Command Line Interface
+For automation and scripts:
+
+```bash
+npm run dev test -- --url "https://example.com" --scenario "Your test here"
+```
+
+👉 **[See CLI Guide](HOW-TO-USE.md)** for full details.
+
 ## Features
 
+- **🌐 Web Application**: Beautiful browser-based UI - no terminal needed!
 - **Natural Language Testing**: Describe your test scenarios in plain English
 - **AI-Powered Test Generation**: Claude AI automatically generates detailed test steps
 - **Browser Automation**: Uses Playwright for reliable web automation
 - **Screenshot Capture**: Automatic screenshots on errors and test completion
-- **Flexible Input**: Accept test scenarios via CLI arguments or JSON files
+- **Real-Time Progress**: Watch tests execute with live updates
+- **Flexible Input**: Web UI, CLI arguments, or JSON files
 - **Detailed Reporting**: Comprehensive test results with step-by-step execution details
+- **REST API**: Programmatic access to testing capabilities
 
 ## Installation
 

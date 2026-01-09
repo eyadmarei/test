@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Testing Agent - AI-Powered Testing</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <div class="logo">
+                <span class="robot">🤖</span>
+                <h1>Web Testing Agent</h1>
+            </div>
+            <p class="tagline">AI-Powered Web Application Testing</p>
+        </header>
+
+        <!-- Main Form -->
+        <div class="card">
+            <h2>Start a New Test</h2>
+            <form id="testForm">
+                <div class="form-group">
+                    <label for="url">
+                        <span class="label-icon">🌐</span>
+                        Website URL
+                    </label>
+                    <input
+                        type="url"
+                        id="url"
+                        name="url"
+                        placeholder="https://example.com"
+                        required
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="scenario">
+                        <span class="label-icon">📝</span>
+                        Test Scenario (describe in plain English)
+                    </label>
+                    <textarea
+                        id="scenario"
+                        name="scenario"
+                        rows="4"
+                        placeholder="Example: Click on the login button, fill in email with test@example.com, fill password with demo123, and submit the form"
+                        required
+                    ></textarea>
+                </div>
+
+                <div class="form-group checkbox-group">
+                    <label>
+                        <input type="checkbox" id="headless" name="headless" checked>
+                        <span>Run in headless mode (faster)</span>
+                    </label>
+                </div>
+
+                <button type="submit" class="btn btn-primary" id="submitBtn">
+                    <span class="btn-icon">▶️</span>
+                    Run Test
+                </button>
+            </form>
+        </div>
+
+        <!-- Examples -->
+        <div class="card examples">
+            <h3>Example Test Scenarios</h3>
+            <div class="example-list">
+                <div class="example-item" onclick="fillExample('https://github.com', 'Click on the Explore button and verify the page loads')">
+                    <strong>Navigation Test:</strong> "Click on the Explore button and verify the page loads"
+                </div>
+                <div class="example-item" onclick="fillExample('https://google.com', 'Search for web testing and verify results appear')">
+                    <strong>Search Test:</strong> "Search for web testing and verify results appear"
+                </div>
+                <div class="example-item" onclick="fillExample('https://example.com', 'Verify the page has a title and displays Example Domain text')">
+                    <strong>Verification Test:</strong> "Verify the page has a title and displays Example Domain text"
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading State -->
+        <div id="loadingState" class="card loading-state" style="display: none;">
+            <div class="spinner"></div>
+            <h3>Running Test...</h3>
+            <p id="loadingMessage">Generating test plan with AI...</p>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div id="resultsContainer" style="display: none;">
+            <div class="card results">
+                <div class="results-header">
+                    <h2>Test Results</h2>
+                    <span id="resultStatus" class="status-badge"></span>
+                </div>
+
+                <div class="result-info">
+                    <div class="info-item">
+                        <strong>Scenario:</strong>
+                        <span id="resultScenario"></span>
+                    </div>
+                    <div class="info-item">
+                        <strong>URL:</strong>
+                        <span id="resultUrl"></span>
+                    </div>
+                    <div class="info-item">
+                        <strong>Duration:</strong>
+                        <span id="resultDuration"></span>
+                    </div>
+                    <div class="info-item">
+                        <strong>Steps Executed:</strong>
+                        <span id="resultSteps"></span>
+                    </div>
+                </div>
+
+                <div id="stepsContainer" class="steps-container"></div>
+
+                <div id="screenshotsContainer" class="screenshots-container"></div>
+
+                <button onclick="resetForm()" class="btn btn-secondary">
+                    Run Another Test
+                </button>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer>
+            <p>Built with Claude AI, Playwright, and Express</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
