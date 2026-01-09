@@ -1,0 +1,10 @@
+{
+  "url": "https://www.google.com",
+  "description": "Test Google search functionality",
+  "steps": [
+    "Navigate to Google homepage",
+    "Enter 'Playwright testing' in the search box",
+    "Click the search button",
+    "Verify search results are displayed"
+  ]
+}

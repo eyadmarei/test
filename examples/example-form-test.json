@@ -1,0 +1,12 @@
+{
+  "url": "https://www.example.com",
+  "description": "Test contact form submission",
+  "steps": [
+    "Navigate to the contact page",
+    "Fill in the name field with 'John Doe'",
+    "Fill in the email field with 'john@example.com'",
+    "Fill in the message field with 'This is a test message'",
+    "Click the submit button",
+    "Verify success message is displayed"
+  ]
+}
