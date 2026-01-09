@@ -110,7 +110,7 @@ Be specific with CSS selectors (prefer data-testid, id, or unique class names).
 Return ONLY the JSON array, no explanations.`;
 
     const message = await this.anthropic.messages.create({
-      model: 'claude-3-5-sonnet-20241022',
+      model: 'claude-3-haiku-20240307',
       max_tokens: 2000,
       messages: [{
         role: 'user',
