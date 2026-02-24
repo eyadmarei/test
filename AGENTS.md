@@ -3,19 +3,32 @@
 ## Cursor Cloud specific instructions
 
 ### Overview
-This is a single-service Node.js/TypeScript application — an AI-powered web testing agent. It uses Playwright for browser automation and the Anthropic Claude API for test plan generation.
+GCP Pricing Calculator Agent — a Python/FastAPI web app. The user types a GCP resource request in plain English; a Gemini AI agent visually operates the GCP Pricing Calculator in a real browser (Playwright + Chromium) and returns a monthly cost estimate.
 
-### Running the application
-- **Web UI (Express server):** `npm run web` — serves on port 3000
-- **CLI mode:** `npm run dev test -- --url <url> --scenario "<scenario>"`
-- See `README.md` for full usage details and `QUICKSTART.md` for a step-by-step guide.
+### Stack
+- Python 3.9+ (3.12 on this VM)
+- **FastAPI + uvicorn** — HTTP server
+- **Playwright** (sync, Chromium) — browser automation
+- **google-genai** — Gemini API client (supports both AI Studio key and Vertex AI)
+  - `gemini-2.5-computer-use-preview-10-2025` — the agent that sees screenshots and clicks
+  - `gemini-2.5-flash` — fast model for parsing user input and describing steps
+- **python-dotenv** — `.env` config
 
-### Build
-- `npm run build` — runs `tsc` to compile TypeScript to `dist/`
+### Running the app
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+Web UI at `http://localhost:8000`. API docs at `http://localhost:8000/docs`.
+
+### Key API endpoints
+- `GET  /api/health` — health check (also reports whether Gemini is configured)
+- `POST /api/price` — submit a pricing query (`{"query": "..."}`)
+- `GET  /api/price/{job_id}` — poll job status
+- `GET  /api/jobs` — list all jobs
 
 ### Key caveats
-- **ANTHROPIC_API_KEY required:** The `TestingAgent` constructor throws immediately if `ANTHROPIC_API_KEY` is not set in `.env` or passed in config. The Express server starts fine without it, but test submissions will fail at runtime. Copy `.env.example` to `.env` and add a valid key.
-- **Playwright browsers:** After `npm install`, you must also run `npx playwright install --with-deps chromium` to install the Chromium browser binary and its OS-level dependencies. Without this, browser automation will fail.
-- **ES Modules:** The project uses `"type": "module"` in `package.json`. All imports use `.js` extensions in TypeScript source files (standard ESM convention).
-- **No linter configured:** There is no ESLint or Prettier configuration in this project. TypeScript strict mode (`tsc`) is the primary code quality check.
-- **No automated test suite:** There are no unit/integration test files or test runner configured. The `npm run test` script is an alias for the CLI entry point, not a test framework.
+- **GEMINI_API_KEY required:** Set in `.env` (copy `.env.example`). Without a valid key, the server starts but pricing jobs will fail with `API_KEY_INVALID`. Alternatively, set `USE_VERTEXAI=true` + `VERTEXAI_PROJECT` + `VERTEXAI_LOCATION` for Vertex AI auth.
+- **Playwright Chromium:** After `pip install`, also run `python3 -m playwright install --with-deps chromium`.
+- **PATH:** pip installs to `~/.local/bin` — ensure it's on `$PATH` for `uvicorn` and `playwright` CLI.
+- **No linter or test suite configured:** There is no pytest, flake8, or mypy configured in this project. Python type hints are used but not enforced via tooling.
+- **Headless browser:** The computer-use agent launches Chromium headless by default. In the Cloud VM, `xvfb` is pre-installed for headed mode if needed.
