@@ -330,7 +330,7 @@ def run_pricing_agent(
                 ),
             ),
         ],
-        thinking_config=types.ThinkingConfig(include_thoughts=True),
+        # thinking_config omitted — not supported on all Vertex AI endpoints
     )
 
     contents: list[Content] = [
