@@ -31,7 +31,7 @@ jobs: dict[str, dict] = {}
 
 class PriceRequest(BaseModel):
     query: str
-    headless: bool = True
+    headless: bool = False
 
 
 class JobStatus(BaseModel):
@@ -64,8 +64,13 @@ def _run_job(job_id: str, query: str, headless: bool) -> None:
         job["parsed_spec"] = resource_spec
 
         job["status"] = "running_agent"
+
+        def _on_step(count):
+            job["step_count"] = count
+
         result: AgentResult = run_pricing_agent(
-            resource_spec, headless=headless, max_steps=40, timeout_sec=180
+            resource_spec, headless=headless, max_steps=40, timeout_sec=180,
+            on_step=_on_step,
         )
 
         job["status"] = "done" if result.success else "failed"

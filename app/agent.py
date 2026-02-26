@@ -305,6 +305,7 @@ def run_pricing_agent(
     headless: bool = True,
     max_steps: int = 40,
     timeout_sec: int = 180,
+    on_step: callable = None,
 ) -> AgentResult:
     """Open the GCP Pricing Calculator and fill in *resource_spec*."""
     client = _get_client()
@@ -433,6 +434,9 @@ def run_pricing_agent(
                 except Exception as e:
                     print(f"[agent] action error: {e}")
                     screenshot_bytes, url = comp._state()
+
+                if on_step:
+                    on_step(len(result.steps))
 
                 fr_parts.append(
                     Part(function_response=FunctionResponse(
