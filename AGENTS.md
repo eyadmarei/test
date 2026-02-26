@@ -26,11 +26,26 @@ Web UI at `http://localhost:8000`. API docs at `http://localhost:8000/docs`.
 - `GET  /api/price/{job_id}` — poll job status
 - `GET  /api/jobs` — list all jobs
 
+### Authentication (two options)
+
+**Option A — AI Studio API key** (simple, but has free-tier rate limits):
+```
+GEMINI_API_KEY=your_key_here
+```
+
+**Option B — Vertex AI service account** (recommended, pay-per-use, no quota wall):
+```
+USE_VERTEXAI=true
+VERTEXAI_PROJECT=your-project-id
+VERTEXAI_LOCATION=global
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+```
+The location **must be `global`** — the Computer Use preview model returns 404 on regional endpoints like `us-central1`. The service account needs the **Vertex AI User** role.
+
 ### Key caveats
-- **GEMINI_API_KEY required:** Set in `.env` (copy `.env.example`). Without a valid key, the server starts but pricing jobs will fail with `API_KEY_INVALID`. Alternatively, set `USE_VERTEXAI=true` + `VERTEXAI_PROJECT` + `VERTEXAI_LOCATION` for Vertex AI auth.
 - **Playwright Chromium:** After `pip install`, also run `python3 -m playwright install --with-deps chromium`.
 - **PATH:** pip installs to `~/.local/bin` — ensure it's on `$PATH` for `uvicorn` and `playwright` CLI.
 - **No linter or test suite configured:** There is no pytest, flake8, or mypy configured in this project. Python type hints are used but not enforced via tooling.
 - **Headless browser:** The computer-use agent launches Chromium headless by default. In the Cloud VM, `xvfb` is pre-installed for headed mode if needed.
-- **Computer Use model quota:** The `gemini-2.5-computer-use-preview-10-2025` model has very tight free-tier rate limits. Each pricing job makes 10-20+ API calls to this model. On the free tier, expect to run ~1 job every few minutes; back-to-back requests will hit `429 RESOURCE_EXHAUSTED`. Space out requests or upgrade the API key quota.
-- **Agent rewrite pattern:** The computer-use agent follows the official `google-gemini/computer-use-preview` reference implementation. The model returns predefined function calls (`click_at`, `type_text_at`, `navigate`, etc.) with coordinates normalized to 0-1000; these are denormalized to the actual viewport (1280x900). Screenshots are returned inline in `FunctionResponse.parts` as PNG blobs.
+- **thinking_config:** Do not enable `ThinkingConfig(include_thoughts=True)` when using Vertex AI — it is not supported on all endpoints and will return a 400 error.
+- **Agent pattern:** The computer-use agent follows the official `google-gemini/computer-use-preview` reference implementation. The model returns predefined function calls (`click_at`, `type_text_at`, `navigate`, etc.) with coordinates normalized to 0-1000; these are denormalized to the actual viewport (1280x900). Screenshots are returned inline in `FunctionResponse.parts` as PNG blobs.
