@@ -1,47 +1,90 @@
 """Gemini 2.5 Computer Use agent — visually drives the GCP Pricing
-Calculator inside a real Chromium browser controlled by Playwright."""
+Calculator inside a real Chromium browser controlled by Playwright.
+
+Based on the official google-gemini/computer-use-preview reference
+implementation."""
 
 from __future__ import annotations
 
 import base64
-import io
 import os
+import sys
 import time
 import traceback
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, Union
 
 from google import genai
 from google.genai import types
-from playwright.sync_api import sync_playwright, Page, Browser
+from google.genai.types import (
+    Part,
+    Content,
+    GenerateContentConfig,
+    FunctionResponse,
+    FinishReason,
+)
+from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext
+
+import playwright.sync_api
 
 COMPUTER_USE_MODEL = "gemini-2.5-computer-use-preview-10-2025"
 FLASH_MODEL = "gemini-2.5-flash"
 
 GCP_CALCULATOR_URL = "https://cloud.google.com/products/calculator"
 
-VIEWPORT = {"width": 1280, "height": 900}
+SCREEN_WIDTH = 1280
+SCREEN_HEIGHT = 900
 
-SYSTEM_INSTRUCTION = """\
-You are an expert at using the Google Cloud Pricing Calculator website.
-You will receive a structured resource specification. Your job is to:
-1. Navigate to the pricing calculator if not already there.
-2. Add the requested resources by interacting with the UI.
-3. Configure all fields to match the spec (machine type, vCPUs, RAM, region, OS, disk, etc.).
-4. Once configured, read the estimated monthly cost from the page.
-5. Return the final monthly cost as your last message.
+PLAYWRIGHT_KEY_MAP = {
+    "backspace": "Backspace",
+    "tab": "Tab",
+    "return": "Enter",
+    "enter": "Enter",
+    "shift": "Shift",
+    "control": "ControlOrMeta",
+    "alt": "Alt",
+    "escape": "Escape",
+    "space": "Space",
+    "pageup": "PageUp",
+    "pagedown": "PageDown",
+    "end": "End",
+    "home": "Home",
+    "left": "ArrowLeft",
+    "up": "ArrowUp",
+    "right": "ArrowRight",
+    "down": "ArrowDown",
+    "insert": "Insert",
+    "delete": "Delete",
+    "f1": "F1", "f2": "F2", "f3": "F3", "f4": "F4",
+    "f5": "F5", "f6": "F6", "f7": "F7", "f8": "F8",
+    "f9": "F9", "f10": "F10", "f11": "F11", "f12": "F12",
+    "command": "Meta",
+}
 
-Be patient — the page may take time to load. Wait for elements before clicking.
-If a field is already set to the correct value, skip it.
-Prefer clicking visible UI elements over typing when possible.
-"""
+MAX_RECENT_SCREENSHOTS = 3
+
+PREDEFINED_FUNCTIONS = [
+    "open_web_browser",
+    "click_at",
+    "hover_at",
+    "type_text_at",
+    "scroll_document",
+    "scroll_at",
+    "wait_5_seconds",
+    "go_back",
+    "go_forward",
+    "search",
+    "navigate",
+    "key_combination",
+    "drag_and_drop",
+]
 
 
 def _get_client() -> genai.Client:
     api_key = os.getenv("GEMINI_API_KEY", "")
     project = os.getenv("VERTEXAI_PROJECT", "")
 
-    if os.getenv("USE_VERTEXAI", "").lower() == "true" and project:
+    if os.getenv("USE_VERTEXAI", "").lower() in ("true", "1") and project:
         return genai.Client(
             vertexai=True,
             project=project,
@@ -54,20 +97,18 @@ def _get_client() -> genai.Client:
     )
 
 
-def _screenshot_b64(page: Page) -> str:
-    png_bytes = page.screenshot(type="png")
-    return base64.b64encode(png_bytes).decode()
+def _denorm_x(x: int) -> int:
+    return int(x / 1000 * SCREEN_WIDTH)
 
 
-def _make_image_part(b64: str) -> types.Part:
-    return types.Part.from_bytes(data=base64.b64decode(b64), mime_type="image/png")
+def _denorm_y(y: int) -> int:
+    return int(y / 1000 * SCREEN_HEIGHT)
 
 
 @dataclass
 class StepRecord:
     action: str
     details: str = ""
-    screenshot_b64: str = ""
     timestamp: float = field(default_factory=time.time)
 
 
@@ -80,73 +121,182 @@ class AgentResult:
     summary: str = ""
 
 
-def _execute_action(page: Page, action: dict) -> str:
-    """Execute a single computer-use action returned by the model.
+class _BrowserComputer:
+    """Thin wrapper around Playwright that mirrors the official
+    PlaywrightComputer interface from google-gemini/computer-use-preview."""
 
-    Returns a short human description of what was done.
-    """
-    action_type = action.get("type", action.get("action", ""))
+    def __init__(self, page: Page):
+        self._page = page
 
-    if action_type in ("click", "mouse_click"):
-        x = int(action.get("x", 0))
-        y = int(action.get("y", 0))
-        button = action.get("button", "left")
-        page.mouse.click(x, y, button=button)
-        return f"click ({x}, {y})"
+    def _state(self) -> tuple[bytes, str]:
+        self._page.wait_for_load_state()
+        time.sleep(0.5)
+        screenshot = self._page.screenshot(type="png", full_page=False)
+        return screenshot, self._page.url
 
-    if action_type in ("type", "key_type", "input_text"):
-        text = action.get("text", action.get("value", ""))
-        page.keyboard.type(text, delay=30)
-        return f"type '{text[:40]}'"
+    def open_web_browser(self) -> tuple[bytes, str]:
+        return self._state()
 
-    if action_type in ("key", "key_press", "press"):
-        key = action.get("key", action.get("value", ""))
-        page.keyboard.press(key)
-        return f"press '{key}'"
+    def click_at(self, x: int, y: int) -> tuple[bytes, str]:
+        self._page.mouse.click(x, y)
+        self._page.wait_for_load_state()
+        return self._state()
 
-    if action_type == "scroll":
-        x = int(action.get("x", VIEWPORT["width"] // 2))
-        y = int(action.get("y", VIEWPORT["height"] // 2))
-        dx = int(action.get("delta_x", action.get("scroll_x", 0)))
-        dy = int(action.get("delta_y", action.get("scroll_y", 0)))
-        page.mouse.move(x, y)
-        page.mouse.wheel(dx, dy)
-        return f"scroll ({dx}, {dy}) at ({x}, {y})"
+    def hover_at(self, x: int, y: int) -> tuple[bytes, str]:
+        self._page.mouse.move(x, y)
+        self._page.wait_for_load_state()
+        return self._state()
 
-    if action_type in ("navigate", "goto"):
-        url = action.get("url", "")
-        page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-        return f"navigate to {url[:60]}"
+    def type_text_at(
+        self, x: int, y: int, text: str,
+        press_enter: bool = False, clear_before_typing: bool = True,
+    ) -> tuple[bytes, str]:
+        self._page.mouse.click(x, y)
+        self._page.wait_for_load_state()
+        if clear_before_typing:
+            self._page.keyboard.press("ControlOrMeta+a")
+            self._page.keyboard.press("Delete")
+        self._page.keyboard.type(text)
+        self._page.wait_for_load_state()
+        if press_enter:
+            self._page.keyboard.press("Enter")
+            self._page.wait_for_load_state()
+        return self._state()
 
-    if action_type == "wait":
-        ms = int(action.get("duration", action.get("ms", 1000)))
-        time.sleep(ms / 1000)
-        return f"wait {ms}ms"
+    def scroll_document(self, direction: str) -> tuple[bytes, str]:
+        if direction == "down":
+            self._page.keyboard.press("PageDown")
+        elif direction == "up":
+            self._page.keyboard.press("PageUp")
+        elif direction in ("left", "right"):
+            amt = SCREEN_WIDTH // 2
+            sign = "-" if direction == "left" else ""
+            self._page.evaluate(f"window.scrollBy({sign}{amt}, 0)")
+        self._page.wait_for_load_state()
+        return self._state()
 
-    if action_type in ("screenshot", "observe"):
-        return "observe (screenshot)"
+    def scroll_at(self, x: int, y: int, direction: str, magnitude: int = 800) -> tuple[bytes, str]:
+        self._page.mouse.move(x, y)
+        dx, dy = 0, 0
+        if direction == "up": dy = -magnitude
+        elif direction == "down": dy = magnitude
+        elif direction == "left": dx = -magnitude
+        elif direction == "right": dx = magnitude
+        self._page.mouse.wheel(dx, dy)
+        self._page.wait_for_load_state()
+        return self._state()
 
-    if action_type in ("drag", "mouse_drag"):
-        sx, sy = int(action.get("start_x", 0)), int(action.get("start_y", 0))
-        ex, ey = int(action.get("end_x", 0)), int(action.get("end_y", 0))
-        page.mouse.move(sx, sy)
-        page.mouse.down()
-        page.mouse.move(ex, ey)
-        page.mouse.up()
-        return f"drag ({sx},{sy})→({ex},{ey})"
+    def wait_5_seconds(self) -> tuple[bytes, str]:
+        time.sleep(5)
+        return self._state()
 
-    return f"unknown action: {action_type}"
+    def go_back(self) -> tuple[bytes, str]:
+        self._page.go_back()
+        self._page.wait_for_load_state()
+        return self._state()
+
+    def go_forward(self) -> tuple[bytes, str]:
+        self._page.go_forward()
+        self._page.wait_for_load_state()
+        return self._state()
+
+    def search(self) -> tuple[bytes, str]:
+        return self.navigate("https://www.google.com")
+
+    def navigate(self, url: str) -> tuple[bytes, str]:
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        self._page.goto(url)
+        self._page.wait_for_load_state()
+        return self._state()
+
+    def key_combination(self, keys: list[str]) -> tuple[bytes, str]:
+        keys = [PLAYWRIGHT_KEY_MAP.get(k.lower(), k) for k in keys]
+        for k in keys[:-1]:
+            self._page.keyboard.down(k)
+        self._page.keyboard.press(keys[-1])
+        for k in reversed(keys[:-1]):
+            self._page.keyboard.up(k)
+        return self._state()
+
+    def drag_and_drop(self, x: int, y: int, dest_x: int, dest_y: int) -> tuple[bytes, str]:
+        self._page.mouse.move(x, y)
+        self._page.mouse.down()
+        self._page.mouse.move(dest_x, dest_y)
+        self._page.mouse.up()
+        return self._state()
 
 
-def _build_tool() -> types.Tool:
-    return types.Tool(
-        computer_use=types.ToolComputerUse(
-            environment=types.Environment(
-                display_width=VIEWPORT["width"],
-                display_height=VIEWPORT["height"],
-            )
+def _handle_action(comp: _BrowserComputer, fc: types.FunctionCall) -> tuple[bytes, str]:
+    """Dispatch a predefined computer-use function call."""
+    name = fc.name
+    args = dict(fc.args) if fc.args else {}
+
+    if name == "open_web_browser":
+        return comp.open_web_browser()
+    elif name == "click_at":
+        return comp.click_at(_denorm_x(int(args["x"])), _denorm_y(int(args["y"])))
+    elif name == "hover_at":
+        return comp.hover_at(_denorm_x(int(args["x"])), _denorm_y(int(args["y"])))
+    elif name == "type_text_at":
+        return comp.type_text_at(
+            _denorm_x(int(args["x"])), _denorm_y(int(args["y"])),
+            text=str(args.get("text", "")),
+            press_enter=bool(args.get("press_enter", False)),
+            clear_before_typing=bool(args.get("clear_before_typing", True)),
         )
-    )
+    elif name == "scroll_document":
+        return comp.scroll_document(str(args["direction"]))
+    elif name == "scroll_at":
+        mag = int(args.get("magnitude", 800))
+        direction = str(args["direction"])
+        if direction in ("up", "down"):
+            mag = _denorm_y(mag)
+        else:
+            mag = _denorm_x(mag)
+        return comp.scroll_at(
+            _denorm_x(int(args["x"])), _denorm_y(int(args["y"])),
+            direction=direction, magnitude=mag,
+        )
+    elif name == "wait_5_seconds":
+        return comp.wait_5_seconds()
+    elif name == "go_back":
+        return comp.go_back()
+    elif name == "go_forward":
+        return comp.go_forward()
+    elif name == "search":
+        return comp.search()
+    elif name == "navigate":
+        return comp.navigate(str(args["url"]))
+    elif name == "key_combination":
+        return comp.key_combination(str(args["keys"]).split("+"))
+    elif name == "drag_and_drop":
+        return comp.drag_and_drop(
+            _denorm_x(int(args["x"])), _denorm_y(int(args["y"])),
+            _denorm_x(int(args["destination_x"])), _denorm_y(int(args["destination_y"])),
+        )
+    else:
+        raise ValueError(f"Unknown function: {name}")
+
+
+def _prune_old_screenshots(contents: list[Content]) -> None:
+    """Keep screenshots only in the N most recent user turns."""
+    count = 0
+    for content in reversed(contents):
+        if content.role != "user" or not content.parts:
+            continue
+        has_ss = any(
+            p.function_response and p.function_response.parts
+            and p.function_response.name in PREDEFINED_FUNCTIONS
+            for p in content.parts
+        )
+        if has_ss:
+            count += 1
+            if count > MAX_RECENT_SCREENSHOTS:
+                for p in content.parts:
+                    if (p.function_response and p.function_response.parts
+                            and p.function_response.name in PREDEFINED_FUNCTIONS):
+                        p.function_response.parts = None
 
 
 def run_pricing_agent(
@@ -156,10 +306,7 @@ def run_pricing_agent(
     max_steps: int = 40,
     timeout_sec: int = 180,
 ) -> AgentResult:
-    """Open the GCP Pricing Calculator and fill in *resource_spec*.
-
-    Returns an AgentResult with the estimated monthly cost.
-    """
+    """Open the GCP Pricing Calculator and fill in *resource_spec*."""
     client = _get_client()
     result = AgentResult(success=False)
     start = time.time()
@@ -171,128 +318,158 @@ def run_pricing_agent(
         "resource, and tell me the estimated monthly cost."
     )
 
-    with sync_playwright() as pw:
-        browser: Browser = pw.chromium.launch(
-            headless=headless,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        context = browser.new_context(
-            viewport=VIEWPORT,
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    config = GenerateContentConfig(
+        temperature=1,
+        top_p=0.95,
+        top_k=40,
+        max_output_tokens=8192,
+        tools=[
+            types.Tool(
+                computer_use=types.ComputerUse(
+                    environment=types.Environment.ENVIRONMENT_BROWSER,
+                ),
             ),
-        )
-        page = context.new_page()
+        ],
+        thinking_config=types.ThinkingConfig(include_thoughts=True),
+    )
 
-        try:
-            page.goto(GCP_CALCULATOR_URL, wait_until="domcontentloaded", timeout=30_000)
-            page.wait_for_timeout(3000)
+    contents: list[Content] = [
+        Content(role="user", parts=[Part(text=user_prompt)])
+    ]
 
-            result.steps.append(StepRecord(
-                action="navigate",
-                details=f"Opened {GCP_CALCULATOR_URL}",
-                screenshot_b64=_screenshot_b64(page),
-            ))
+    pw_ctx = sync_playwright().start()
+    browser: Browser = pw_ctx.chromium.launch(
+        headless=headless,
+        args=["--disable-extensions", "--disable-dev-shm-usage"],
+    )
+    context: BrowserContext = browser.new_context(
+        viewport={"width": SCREEN_WIDTH, "height": SCREEN_HEIGHT},
+    )
+    page = context.new_page()
 
-            screenshot = _screenshot_b64(page)
-            messages: list[types.Content] = [
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_text(text=user_prompt),
-                        _make_image_part(screenshot),
-                    ],
-                )
-            ]
+    def _on_new_page(new_page: playwright.sync_api.Page):
+        new_url = new_page.url
+        new_page.close()
+        page.goto(new_url)
 
-            for step_idx in range(max_steps):
-                if time.time() - start > timeout_sec:
-                    result.error = "Timed out"
-                    break
+    context.on("page", _on_new_page)
 
+    try:
+        page.goto(GCP_CALCULATOR_URL, wait_until="domcontentloaded", timeout=30_000)
+        page.wait_for_load_state()
+        time.sleep(2)
+
+        result.steps.append(StepRecord(
+            action="navigate",
+            details=f"Opened {GCP_CALCULATOR_URL}",
+        ))
+
+        comp = _BrowserComputer(page)
+
+        for step_idx in range(max_steps):
+            if time.time() - start > timeout_sec:
+                result.error = "Timed out"
+                break
+
+            try:
                 response = client.models.generate_content(
                     model=COMPUTER_USE_MODEL,
-                    contents=messages,
-                    config=types.GenerateContentConfig(
-                        tools=[_build_tool()],
-                        system_instruction=SYSTEM_INSTRUCTION,
-                        temperature=0.0,
-                    ),
+                    contents=contents,
+                    config=config,
                 )
+            except Exception as e:
+                print(f"[agent] generate_content error: {e}")
+                result.error = str(e)
+                break
 
-                if not response.candidates:
-                    result.error = "No candidates in response"
-                    break
+            if not response.candidates:
+                result.error = "No candidates in response"
+                break
 
-                candidate = response.candidates[0]
-                parts = candidate.content.parts if candidate.content else []
+            candidate = response.candidates[0]
+            parts = candidate.content.parts if candidate.content else []
 
-                messages.append(types.Content(role="model", parts=parts))
+            if candidate.content:
+                contents.append(candidate.content)
 
-                has_function_call = False
-                text_parts = []
+            text_parts = []
+            function_calls = []
+            for part in parts:
+                if part.function_call:
+                    function_calls.append(part.function_call)
+                if part.text:
+                    text_parts.append(part.text)
 
-                for part in parts:
-                    if part.function_call:
-                        has_function_call = True
-                        fc = part.function_call
-                        action_dict = dict(fc.args) if fc.args else {}
-                        action_dict.setdefault("type", fc.name)
+            if (not function_calls and not text_parts
+                    and candidate.finish_reason == FinishReason.MALFORMED_FUNCTION_CALL):
+                continue
 
-                        desc = _execute_action(page, action_dict)
-                        page.wait_for_timeout(800)
-
-                        new_screenshot = _screenshot_b64(page)
-                        result.steps.append(StepRecord(
-                            action=desc,
-                            details=str(action_dict),
-                            screenshot_b64=new_screenshot,
-                        ))
-
-                        messages.append(
-                            types.Content(
-                                role="user",
-                                parts=[
-                                    types.Part.from_function_response(
-                                        name=fc.name,
-                                        response={"status": "ok"},
-                                    ),
-                                    _make_image_part(new_screenshot),
-                                ],
-                            )
-                        )
-
-                    if part.text:
-                        text_parts.append(part.text)
-
-                full_text = "\n".join(text_parts).strip()
-
-                if not has_function_call and full_text:
+            if not function_calls:
+                full_text = " ".join(text_parts).strip()
+                if full_text:
                     result.summary = full_text
-                    for token in ("$", "USD", "month", "cost", "estimate"):
+                    for token in ("$", "USD", "month", "cost", "estimate", "price"):
                         if token.lower() in full_text.lower():
                             result.success = True
                             result.monthly_cost = full_text
                             break
-                    break
+                    if not result.success:
+                        result.monthly_cost = full_text
+                        result.success = True
+                break
 
-                if not has_function_call and not full_text:
-                    result.error = "Model returned empty response"
-                    break
+            fr_parts = []
+            for fc in function_calls:
+                desc = f"{fc.name}({dict(fc.args) if fc.args else {}})"
+                result.steps.append(StepRecord(action=fc.name, details=desc))
+                print(f"[agent] step {step_idx}: {desc}")
 
-        except Exception as exc:
-            result.error = f"{type(exc).__name__}: {exc}"
-            traceback.print_exc()
-        finally:
+                extra = {}
+                if fc.args and fc.args.get("safety_decision"):
+                    extra["safety_acknowledgement"] = "true"
+
+                try:
+                    screenshot_bytes, url = _handle_action(comp, fc)
+                except Exception as e:
+                    print(f"[agent] action error: {e}")
+                    screenshot_bytes, url = comp._state()
+
+                fr_parts.append(
+                    Part(function_response=FunctionResponse(
+                        name=fc.name,
+                        response={"url": url, **extra},
+                        parts=[
+                            types.FunctionResponsePart(
+                                inline_data=types.FunctionResponseBlob(
+                                    mime_type="image/png",
+                                    data=screenshot_bytes,
+                                )
+                            )
+                        ],
+                    ))
+                )
+
+            contents.append(Content(role="user", parts=fr_parts))
+            _prune_old_screenshots(contents)
+
+    except Exception as exc:
+        result.error = f"{type(exc).__name__}: {exc}"
+        traceback.print_exc()
+    finally:
+        try:
             browser.close()
+        except Exception:
+            pass
+        try:
+            pw_ctx.stop()
+        except Exception:
+            pass
 
     return result
 
 
 def describe_steps(steps: list[StepRecord]) -> str:
-    """Use Gemini Flash to produce a human-readable summary of the agent's
-    recorded steps."""
+    """Use Gemini Flash to produce a human-readable summary."""
     if not steps:
         return "No steps recorded."
     client = _get_client()
@@ -305,6 +482,6 @@ def describe_steps(steps: list[StepRecord]) -> str:
             "Summarise the following browser agent actions into 3-5 bullet points "
             "that a non-technical user can understand:\n\n" + actions
         ),
-        config=types.GenerateContentConfig(temperature=0.3),
+        config=GenerateContentConfig(temperature=0.3),
     )
     return resp.text.strip()
