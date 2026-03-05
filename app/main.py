@@ -29,9 +29,12 @@ executor = ThreadPoolExecutor(max_workers=2)
 jobs: dict[str, dict] = {}
 
 
+_HAS_DISPLAY = bool(os.getenv("DISPLAY"))
+
+
 class PriceRequest(BaseModel):
     query: str
-    headless: bool = False
+    headless: bool = not _HAS_DISPLAY
     add_to_estimate: bool = False
 
 
