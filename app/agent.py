@@ -110,8 +110,14 @@ class BrowserSession:
     @property
     def is_alive(self) -> bool:
         try:
-            return self._page is not None and not self._browser._impl_obj._is_closed
-        except Exception:
+            if self._page is None or self._browser is None:
+                print("[session] is_alive: page or browser is None")
+                return False
+            title = self._page.title()
+            print(f"[session] is_alive: True (title={title[:30]})")
+            return True
+        except Exception as e:
+            print(f"[session] is_alive: False ({e})")
             return False
 
     def ensure_started(self, headless: bool = False) -> Page:
@@ -292,6 +298,7 @@ def run_pricing_agent(
     on_step: callable = None,
     get_guidance: callable = None,
     add_to_estimate: bool = False,
+    resume_url: str = "",
 ) -> AgentResult:
     """Open the GCP Pricing Calculator and fill in *resource_spec*.
 
@@ -308,9 +315,12 @@ def run_pricing_agent(
         user_prompt = (
             f"I want to ADD another resource to the existing estimate.\n"
             f"Here is the new GCP resource:\n{spec_text}\n\n"
-            "The calculator already has previous resources configured. "
-            "Click 'Add to estimate' to add a new product, then configure this "
-            "new resource and tell me the updated total monthly cost."
+            "IMPORTANT: The calculator is already open with previous resources. "
+            "DO NOT navigate away or reload the page. "
+            "Look for the 'Add to estimate' button on the current page and click it "
+            "to add a new product. Then configure this new resource. "
+            "When done, tell me the updated TOTAL monthly cost (for all resources combined). "
+            "Here is a screenshot of the current calculator state:"
         )
     else:
         user_prompt = (
@@ -323,23 +333,48 @@ def run_pricing_agent(
         temperature=1, top_p=0.95, top_k=40, max_output_tokens=8192,
         tools=[types.Tool(computer_use=types.ComputerUse(
             environment=types.Environment.ENVIRONMENT_BROWSER))],
-        # thinking_config omitted — not supported on all Vertex AI endpoints
     )
 
-    contents: list[Content] = [Content(role="user", parts=[Part(text=user_prompt)])]
-
-    own_browser = not add_to_estimate
-
+    pw_ctx = None
+    browser = None
     try:
-        page = browser_session.ensure_started(headless=headless)
+        pw_ctx = sync_playwright().start()
+        browser = pw_ctx.chromium.launch(
+            headless=headless,
+            args=["--disable-extensions", "--disable-dev-shm-usage"],
+        )
+        context = browser.new_context(
+            viewport={"width": SCREEN_WIDTH, "height": SCREEN_HEIGHT},
+        )
+        page = context.new_page()
 
-        if not add_to_estimate:
-            page.goto(GCP_CALCULATOR_URL, wait_until="domcontentloaded", timeout=30_000)
-            page.wait_for_load_state()
-            time.sleep(2)
+        def _on_new_page(np):
+            u = np.url; np.close(); page.goto(u)
+        context.on("page", _on_new_page)
 
-        result.steps.append(StepRecord(action="navigate", details=f"Calculator ready"))
+        start_url = resume_url if (add_to_estimate and resume_url) else GCP_CALCULATOR_URL
+        page.goto(start_url, wait_until="domcontentloaded", timeout=45_000)
+        page.wait_for_load_state()
+        time.sleep(3)
+
+        result.steps.append(StepRecord(
+            action="navigate",
+            details=f"Opened {'saved estimate' if resume_url else 'fresh calculator'}",
+        ))
         comp = _BrowserComputer(page)
+
+        current_screenshot = page.screenshot(type="png", full_page=False)
+
+        if add_to_estimate and resume_url:
+            contents: list[Content] = [Content(role="user", parts=[
+                Part(text=user_prompt),
+                Part.from_bytes(data=current_screenshot, mime_type="image/png"),
+            ])]
+        else:
+            contents: list[Content] = [Content(role="user", parts=[Part(text=user_prompt)])]
+
+        if on_step:
+            on_step(1, "Calculator ready", current_screenshot)
 
         for step_idx in range(max_steps):
             if time.time() - start > timeout_sec:
@@ -416,8 +451,23 @@ def run_pricing_agent(
     except Exception as exc:
         result.error = f"{type(exc).__name__}: {exc}"
         traceback.print_exc()
+    finally:
+        try:
+            if page:
+                result.calculator_url = page.url
+        except Exception:
+            pass
+        try:
+            if browser:
+                browser.close()
+        except Exception:
+            pass
+        try:
+            if pw_ctx:
+                pw_ctx.stop()
+        except Exception:
+            pass
 
-    result.calculator_url = browser_session.get_url()
     return result
 
 

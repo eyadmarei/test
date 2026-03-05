@@ -27,6 +27,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 executor = ThreadPoolExecutor(max_workers=2)
 
 jobs: dict[str, dict] = {}
+last_calculator_url: str = ""
 
 
 _HAS_DISPLAY = bool(os.getenv("DISPLAY"))
@@ -93,6 +94,9 @@ def _run_job(job_id: str, query: str, headless: bool, add_to_estimate: bool) -> 
                 return msg
             return None
 
+        global last_calculator_url
+        resume_url = last_calculator_url if add_to_estimate else ""
+
         result: AgentResult = run_pricing_agent(
             resource_spec,
             headless=headless,
@@ -101,6 +105,7 @@ def _run_job(job_id: str, query: str, headless: bool, add_to_estimate: bool) -> 
             on_step=_on_step,
             get_guidance=_get_guidance,
             add_to_estimate=add_to_estimate,
+            resume_url=resume_url,
         )
 
         job["status"] = "done" if result.success else "failed"
@@ -108,6 +113,8 @@ def _run_job(job_id: str, query: str, headless: bool, add_to_estimate: bool) -> 
         job["error"] = result.error or None
         job["step_count"] = len(result.steps)
         job["calculator_url"] = result.calculator_url
+        if result.calculator_url:
+            last_calculator_url = result.calculator_url
         job["end_time"] = time.time()
 
         if result.steps:
